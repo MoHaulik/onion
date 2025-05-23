@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Onion Skin Layered Website</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { margin: 0; overflow: hidden; font-family: -apple-system, system-ui, sans-serif; background: #000; }
+    #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; z-index: 9000; background: rgba(0,0,0,0.8); }
+    .controls { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; z-index: 100; }
+    .controls button { padding: 10px 20px; background: rgba(255,255,255,0.1); color: white; border: 1px solid rgba(255,255,255,0.3); border-radius: 20px; cursor: pointer; transition: all 0.3s; }
+    .controls button:hover { background: rgba(255,255,255,0.2); transform: translateY(-2px); }
+    #start-button { padding: 15px 30px; font-size: 18px; background: rgba(255,255,255,0.9); color: black; border: none; border-radius: 25px; cursor: pointer; font-weight: 600; }
+    #start-button:hover { transform: scale(1.05); }
+    .exit-ar { position: fixed; top: 20px; right: 20px; background: white; color: black; border: none; border-radius: 50%; width: 46px; height: 46px; display: none; align-items: center; justify-content: center; font-size: 24px; cursor: pointer; z-index: 9999; }
+    .xr-active .exit-ar { display: flex; }
+    .xr-active .controls { display: none; }
+    #info { position: fixed; top: 20px; left: 20px; color: white; font-size: 14px; background: rgba(0,0,0,0.5); padding: 10px; border-radius: 10px; max-width: 200px; }
+  </style>
+</head>
+<body>
+  <div id="overlay">
+    <button id="start-button">Enter AR Mode</button>
+  </div>
+  <button class="exit-ar" id="exit-ar">×</button>
+  <div class="controls">
+    <button id="prev-layer">← Previous Layer</button>
+    <button id="next-layer">Next Layer →</button>
+    <button id="toggle-mode">Toggle View</button>
+  </div>
+  <div id="info">Layer 1 of 5</div>
+  
+  <script type="module">
+    import * as THREE from 'https://unpkg.com/three@0.150.1/build/three.module.js';
+    
+    let camera, scene, renderer, controllers = [], xrSession = null, raycaster, layers = [];
+    let currentLayer = 0, viewMode = 'stack'; // stack or exploded
+    
+    // Layer content data
+    const layerData = [
+      {
+        title: "Surface Layer",
+        content: "Welcome to the Onion Skin Experience\nEach layer reveals deeper insights",
+        color: 0x3498db,
+        opacity: 0.7
+      },
+      {
+        title: "Context Layer", 
+        content: "Understanding the Big Picture\nHow components interconnect\nSystem architecture overview",
+        color: 0x2ecc71,
+        opacity: 0.6
+      },
+      {
+        title: "Detail Layer",
+        content: "Technical Specifications\n• Processing: Advanced algorithms\n• Data flow: Real-time streams\n• Integration: API endpoints",
+        color: 0xf39c12,
+        opacity: 0.5
+      },
+      {
+        title: "Core Layer",
+        content: "Fundamental Principles\nCore algorithms and logic\nBase infrastructure\nPerformance optimization",
+        color: 0xe74c3c,
+        opacity: 0.4
+      },
+      {
+        title: "Foundation",
+        content: "The Foundation\nEverything builds from here\nRaw data structures\nBinary protocols\nMachine code",
+        color: 0x9b59b6,
+        opacity: 0.3
+      }
+    ];
+    
+    function init() {
+      scene = new THREE.Scene();
+      scene.fog = new THREE.Fog(0x000000, 1, 10);
+      
+      // Camera setup
+      camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+      camera.position.set(0, 0, 2);
+      
+      // Renderer
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.xr.enabled = true;
+      renderer.setClearColor(0x000000, 0);
+      document.body.appendChild(renderer.domElement);
+      
+      // Lighting
+      scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+      const dirLight = new THREE.DirectionalLight(0xffffff, 0.4);
+      dirLight.position.set(0, 5, 5);
+      scene.add(dirLight);
+      
+      // Raycaster for interactions
+      raycaster = new THREE.Raycaster();
+      
+      // Create layers
+      createLayers();
+      
+      // 2D controls
+      document.getElementById('next-layer').addEventListener('click', () => navigateLayer(1));
+      document.getElementById('prev-layer').addEventListener('click', () => navigateLayer(-1));
+      document.getElementById('toggle-mode').addEventListener('click', toggleViewMode);
+      
+      // Mouse/touch controls for 2D
+      let mouseX = 0, mouseY = 0;
+      let isMouseDown = false;
+      
+      renderer.domElement.addEventListener('mousedown', () => isMouseDown = true);
+      renderer.domElement.addEventListener('mouseup', () => isMouseDown = false);
+      renderer.domElement.addEventListener('mousemove', (e) => {
+        if (isMouseDown) {
+          mouseX = (e.clientX / window.innerWidth) * 2 - 1;
+          mouseY = -(e.clientY / window.innerHeight) * 2 + 1;
+        }
+      });
+      
+      renderer.domElement.addEventListener('wheel', (e) => {
+        camera.position.z += e.deltaY * 0.002;
+        camera.position.z = Math.max(0.5, Math.min(5, camera.position.z));
+      });
+      
+      // AR button
+      document.getElementById('start-button').addEventListener('click', startARSession);
+      document.getElementById('exit-ar').addEventListener('click', () => { if (xrSession) xrSession.end(); });
+      
+      // Window resize
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+      
+      // Start 2D render loop
+      animate();
+    }
+    
+    function createLayers() {
+      const layerGroup = new THREE.Group();
+      
+      layerData.forEach((data, i) => {
+        const layer = createLayer(data, i);
+        layers.push(layer);
+        layerGroup.add(layer);
+      });
+      
+      scene.add(layerGroup);
+      updateLayerPositions();
+    }
+    
+    function createLayer(data, index) {
+      const group = new THREE.Group();
+      
+      // Create canvas for text
+      const canvas = document.createElement('canvas');
+      canvas.width = 1024;
+      canvas.height = 512;
+      const ctx = canvas.getContext('2d');
+      
+      // Draw background
+      ctx.fillStyle = '#111';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      // Draw border
+      ctx.strokeStyle = `#${data.color.toString(16).padStart(6, '0')}`;
+      ctx.lineWidth = 4;
+      ctx.strokeRect(10, 10, canvas.width - 20, canvas.height - 20);
+      
+      // Draw title
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 48px sans-serif';
+      ctx.fillText(data.title, 50, 80);
+      
+      // Draw content
+      ctx.font = '32px sans-serif';
+      const lines = data.content.split('\n');
+      lines.forEach((line, i) => {
+        ctx.fillText(line, 50, 150 + i * 40);
+      });
+      
+      // Create mesh
+      const texture = new THREE.CanvasTexture(canvas);
+      const material = new THREE.MeshBasicMaterial({
+        map: texture,
+        transparent: true,
+        opacity: data.opacity,
+        side: THREE.DoubleSide
+      });
+      
+      const geometry = new THREE.PlaneGeometry(2, 1);
+      const mesh = new THREE.Mesh(geometry, material);
+      
+      // Add glow effect
+      const glowGeometry = new THREE.PlaneGeometry(2.1, 1.05);
+      const glowMaterial = new THREE.MeshBasicMaterial({
+        color: data.color,
+        transparent: true,
+        opacity: 0.2,
+        side: THREE.DoubleSide
+      });
+      const glow = new THREE.Mesh(glowGeometry, glowMaterial);
+      glow.position.z = -0.01;
+      
+      group.add(glow);
+      group.add(mesh);
+      group.userData = { index, data, mesh, glow };
+      
+      // Make interactive
+      mesh.userData.onClick = () => {
+        currentLayer = index;
+        updateLayerFocus();
+      };
+      
+      return group;
+    }
+    
+    function updateLayerPositions() {
+      layers.forEach((layer, i) => {
+        const offset = i - currentLayer;
+        
+        if (viewMode === 'stack') {
+          // Stacked view
+          layer.position.z = offset * 0.3;
+          layer.position.x = 0;
+          layer.position.y = 0;
+          layer.scale.set(1 - Math.abs(offset) * 0.1, 1 - Math.abs(offset) * 0.1, 1);
+        } else {
+          // Exploded view
+          layer.position.z = i * -0.8;
+          layer.position.x = Math.sin(i * 0.5) * 0.3;
+          layer.position.y = Math.cos(i * 0.5) * 0.1;
+          layer.scale.set(0.8, 0.8, 0.8);
+        }
+        
+        // Update opacity based on focus
+        const material = layer.userData.mesh.material;
+        const targetOpacity = i === currentLayer ? 0.9 : layer.userData.data.opacity;
+        material.opacity = THREE.MathUtils.lerp(material.opacity, targetOpacity, 0.1);
+        
+        // Update glow
+        const glowOpacity = i === currentLayer ? 0.4 : 0.1;
+        layer.userData.glow.material.opacity = THREE.MathUtils.lerp(
+          layer.userData.glow.material.opacity, 
+          glowOpacity, 
+          0.1
+        );
+      });
+      
+      document.getElementById('info').textContent = `Layer ${currentLayer + 1} of ${layers.length}`;
+    }
+    
+    function navigateLayer(direction) {
+      currentLayer = Math.max(0, Math.min(layers.length - 1, currentLayer + direction));
+      updateLayerFocus();
+    }
+    
+    function updateLayerFocus() {
+      updateLayerPositions();
+      
+      // Animate camera to focus on current layer
+      const targetZ = viewMode === 'stack' ? 2 : 2 + currentLayer * 0.8;
+      camera.position.z = THREE.MathUtils.lerp(camera.position.z, targetZ, 0.1);
+    }
+    
+    function toggleViewMode() {
+      viewMode = viewMode === 'stack' ? 'exploded' : 'stack';
+      updateLayerPositions();
+    }
+    
+    // AR Session
+    function startARSession() {
+      if (!navigator.xr) return;
+      
+      navigator.xr.isSessionSupported('immersive-ar').then(supported => {
+        if (supported) {
+          navigator.xr.requestSession('immersive-ar', {
+            requiredFeatures: ['hit-test']
+          }).then(onSessionStarted);
+        }
+      });
+    }
+    
+    function onSessionStarted(session) {
+      xrSession = session;
+      document.getElementById('overlay').style.display = 'none';
+      document.body.classList.add('xr-active');
+      
+      renderer.xr.setReferenceSpaceType('local');
+      renderer.xr.setSession(session);
+      
+      // Setup controllers
+      controllers = [0, 1].map(i => {
+        const controller = renderer.xr.getController(i);
+        
+        const pointer = new THREE.Mesh(
+          new THREE.SphereGeometry(0.01),
+          new THREE.MeshBasicMaterial({ color: 0xffffff })
+        );
+        controller.add(pointer);
+        
+        controller.addEventListener('selectstart', onSelect);
+        scene.add(controller);
+        return controller;
+      });
+      
+      session.addEventListener('end', onSessionEnd);
+    }
+    
+    function onSessionEnd() {
+      document.body.classList.remove('xr-active');
+      document.getElementById('overlay').style.display = 'flex';
+      xrSession = null;
+      
+      controllers.forEach(controller => {
+        scene.remove(controller);
+      });
+      controllers = [];
+    }
+    
+    function onSelect(event) {
+      const controller = event.target;
+      const tempMatrix = new THREE.Matrix4();
+      
+      tempMatrix.identity().extractRotation(controller.matrixWorld);
+      raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+      raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+      
+      const intersects = raycaster.intersectObjects(layers.map(l => l.userData.mesh));
+      
+      if (intersects.length > 0) {
+        const mesh = intersects[0].object;
+        if (mesh.userData.onClick) mesh.userData.onClick();
+      }
+    }
+    
+    // Animation loop
+    function animate() {
+      if (!xrSession) {
+        requestAnimationFrame(animate);
+        
+        // Auto-rotate in exploded view
+        if (viewMode === 'exploded') {
+          scene.rotation.y += 0.001;
+        }
+        
+        updateLayerPositions();
+        renderer.render(scene, camera);
+      }
+    }
+    
+    // XR render loop
+    renderer.setAnimationLoop(() => {
+      if (xrSession) {
+        updateLayerPositions();
+        renderer.render(scene, camera);
+      }
+    });
+    
+    init();
+  </script>
+</body>
+</html>
